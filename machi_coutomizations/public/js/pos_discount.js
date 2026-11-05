@@ -1,8 +1,4 @@
-
 (function () {
-	const MIN_BILL_FOR_DISCOUNT = 100;
-	const get_sale_mode = () =>
-		localStorage.getItem("pos_sale_mode") === "Exhibition" ? "Exhibition" : "Store";
 	const page = frappe.pages["point-of-sale"];
 	if (!page || page.__machi_pos_extended) return;
 	page.__machi_pos_extended = true;
@@ -24,7 +20,6 @@
 
 					make_cart_totals_section() {
 						super.make_cart_totals_section();
-						this.make_sale_mode_panel();
 
 						this.$discount_amount = $(`
 							<div style="display:flex;justify-content:space-between;
@@ -39,64 +34,12 @@
 							.before(this.$discount_amount);
 					}
 
-					make_sale_mode_panel() {
-						this.$sale_mode_panel = $(`
-							<div class="machi-sale-mode-panel" style="padding:12px;background:#e3f2fd;border-radius:6px;margin-bottom:12px">
-								<label>${__("POS Sale Mode")}
-									<select class="form-control">
-										<option value="Store">${__("Store Mode (10%)")}</option>
-										<option value="Exhibition">${__("Exhibition Mode (0%)")}</option>
-									</select>
-								</label>
-								<div>${__("Store discount applies only above ₹{0}.", [MIN_BILL_FOR_DISCOUNT])}</div>
-							</div>
-						`);
-						const $pos_app = this.$component.closest(".point-of-sale-app");
-						$pos_app.siblings(".machi-sale-mode-panel").remove();
-						$pos_app.before(this.$sale_mode_panel);
-						this.$sale_mode_panel.find("select").val(get_sale_mode()).on("change", (event) => {
-							localStorage.setItem("pos_sale_mode", event.target.value);
-							this.update_totals_section(this.events.get_frm());
-							frappe.show_alert({
-								message: __("Switched to {0} Mode", [get_sale_mode()]),
-								indicator: "green",
-							}, 3);
-						});
-					}
-
-					apply_sale_mode_discount(frm) {
-						if (!frm?.doc || frm.doc.docstatus !== 0 || this.machi_applying_discount) return;
-						const doc = frm.doc;
-						const total = (doc.items || []).reduce(
-							(sum, item) => sum + flt(item.qty) * flt(item.rate), 0
-						) || flt(doc.total);
-						const discount = get_sale_mode() === "Store" && total > MIN_BILL_FOR_DISCOUNT ? 10 : 0;
-						if (flt(doc.additional_discount_percentage) === discount) return;
-
-						this.machi_applying_discount = true;
-						let failed = false;
-						Promise.resolve().then(() => frm.set_value("additional_discount_percentage", discount))
-							.catch((error) => {
-								failed = true;
-								console.error("POS sale mode discount failed:", error);
-							})
-							.finally(() => {
-								this.machi_applying_discount = false;
-								if (!failed && this.events.get_frm() === frm) {
-									this.hide_discount_control(flt(doc.additional_discount_percentage));
-									this.update_totals_section(frm);
-								}
-							});
-					}
-
 					update_totals_section(frm) {
 						frm = frm || this.events.get_frm();
-						this.apply_sale_mode_discount(frm);
-						this.$sale_mode_panel?.find("select").val(get_sale_mode());
 						super.update_totals_section(frm);
 						if (!this.$discount_amount) return;
 
-						const doc = (frm || this.events.get_frm()).doc;
+						const doc = frm.doc;
 
 						this.$discount_amount
 							.find(".machi-discount-amount")
