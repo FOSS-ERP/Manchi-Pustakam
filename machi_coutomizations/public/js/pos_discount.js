@@ -11,7 +11,7 @@
 		frappe.require("point-of-sale.bundle.js", () => {
 			const POS = erpnext.PointOfSale;
 
-			// Display the discount in cart totals.
+			// Hide Net Total and show Total Cost before the bill discount.
 			if (!POS.ItemCart.__machi_discount_extended) {
 				const ItemCart = POS.ItemCart;
 
@@ -21,34 +21,76 @@
 					make_cart_totals_section() {
 						super.make_cart_totals_section();
 
+						this.$total_cost = $(`
+							<div class="machi-total-cost-row"
+								style="display:flex;justify-content:space-between;
+								align-items:center;margin-bottom:var(--margin-sm)">
+								<span>${__("Total Cost")}</span>
+								<span class="machi-total-cost-amount"></span>
+							</div>
+						`);
+
 						this.$discount_amount = $(`
-							<div style="display:flex;justify-content:space-between;
+							<div class="machi-discount-row"
+								style="display:flex;justify-content:space-between;
 								align-items:center;margin-bottom:var(--margin-sm)">
 								<span>${__("Discount")}</span>
 								<span class="machi-discount-amount"></span>
 							</div>
 						`);
 
-						this.$totals_section
-							.find(".item-qty-total-container")
-							.before(this.$discount_amount);
+						this.arrange_custom_totals();
+					}
+
+					arrange_custom_totals() {
+						const $net_total = this.$totals_section
+							.find(".net-total-container")
+							.first();
+
+						$net_total.hide();
+
+						if (this.$total_cost && this.$discount_amount) {
+							this.$total_cost.insertAfter($net_total);
+							this.$discount_amount.insertAfter(this.$total_cost);
+						}
 					}
 
 					update_totals_section(frm) {
 						frm = frm || this.events.get_frm();
 						super.update_totals_section(frm);
-						if (!this.$discount_amount) return;
+
+						this.arrange_custom_totals();
 
 						const doc = frm.doc;
 
-						this.$discount_amount
-							.find(".machi-discount-amount")
-							.text(
-								format_currency(
-									flt(doc.discount_amount),
-									doc.currency
-								)
-							);
+						// Total cost of all boxes before the bill discount.
+						const total_cost = (doc.items || []).reduce(
+							(total, item) =>
+								total + flt(item.qty) * flt(item.rate),
+							0
+						);
+
+						if (this.$total_cost) {
+							this.$total_cost
+								.find(".machi-total-cost-amount")
+								.text(
+									format_currency(
+										total_cost,
+										doc.currency
+									)
+								);
+						}
+
+						if (this.$discount_amount) {
+							this.$discount_amount
+								.find(".machi-discount-amount")
+								.text(
+									format_currency(
+										flt(doc.discount_amount),
+										doc.currency
+									)
+								);
+						}
 					}
 				};
 			}
@@ -83,6 +125,7 @@
 						});
 
 						const $input = this.barcode_field.$input;
+
 						$input.attr("autocomplete", "off");
 						$input.css("padding-right", "40px");
 
