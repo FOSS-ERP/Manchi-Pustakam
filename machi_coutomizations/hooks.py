@@ -284,3 +284,8 @@ doc_events = {
         "before_validate": "machi_coutomizations.pos_discount.prepare_pos_items",
     }
 }
+
+
+extend_doctype_class = {
+    "POS Invoice": ["machi_coutomizations.pos_rounding.POSRoundingMixin"],
+}
