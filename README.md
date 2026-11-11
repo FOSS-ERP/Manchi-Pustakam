@@ -1,6 +1,5 @@
-<<<<<<< HEAD
+
 # Manchi-Pustakam
-=======
 ### Machi Coutomizations
 
 Customizations for Machi
