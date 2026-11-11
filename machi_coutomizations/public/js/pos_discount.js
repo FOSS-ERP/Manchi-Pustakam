@@ -11,12 +11,33 @@
 		frappe.require("point-of-sale.bundle.js", () => {
 			const POS = erpnext.PointOfSale;
 
-			// Hide Net Total and show Total Cost before the bill discount.
+			// Change the payable rounded total, before payment amounts are calculated.
+			const totals = erpnext.taxes_and_totals.prototype;
+			if (!totals.__machi_truncate_pos_total) {
+				const standard_set_rounded_total = totals.set_rounded_total;
+				totals.set_rounded_total = function (...args) {
+					if (this.frm.doc.doctype !== "POS Invoice") {
+						return standard_set_rounded_total.apply(this, args);
+					}
+					const doc = this.frm.doc;
+					doc.disable_rounded_total = 0;
+					doc.rounded_total = Math.trunc(flt(doc.grand_total));
+					doc.rounding_adjustment = flt(
+						doc.rounded_total - flt(doc.grand_total),
+						precision("rounding_adjustment", doc)
+					);
+					this.set_in_company_currency(doc, ["rounding_adjustment", "rounded_total"]);
+				};
+				totals.__machi_truncate_pos_total = true;
+			}
+
+			// Show Total Cost and Discount, and truncate displayed Grand Total.
 			if (!POS.ItemCart.__machi_discount_extended) {
 				const ItemCart = POS.ItemCart;
 
 				POS.ItemCart = class extends ItemCart {
 					static __machi_discount_extended = true;
+
 
 					make_cart_totals_section() {
 						super.make_cart_totals_section();
@@ -24,7 +45,7 @@
 						this.$total_cost = $(`
 							<div class="machi-total-cost-row"
 								style="display:flex;justify-content:space-between;
-								align-items:center;margin-bottom:var(--margin-sm)">
+									align-items:center;margin-bottom:var(--margin-sm)">
 								<span>${__("Total Cost")}</span>
 								<span class="machi-total-cost-amount"></span>
 							</div>
@@ -33,7 +54,7 @@
 						this.$discount_amount = $(`
 							<div class="machi-discount-row"
 								style="display:flex;justify-content:space-between;
-								align-items:center;margin-bottom:var(--margin-sm)">
+									align-items:center;margin-bottom:var(--margin-sm)">
 								<span>${__("Discount")}</span>
 								<span class="machi-discount-amount"></span>
 							</div>
@@ -63,7 +84,7 @@
 
 						const doc = frm.doc;
 
-						// Total cost of all boxes before the bill discount.
+						// Preserve decimal item rates in Total Cost.
 						const total_cost = (doc.items || []).reduce(
 							(total, item) =>
 								total + flt(item.qty) * flt(item.rate),
@@ -74,10 +95,7 @@
 							this.$total_cost
 								.find(".machi-total-cost-amount")
 								.text(
-									format_currency(
-										total_cost,
-										doc.currency
-									)
+									format_currency(total_cost, doc.currency)
 								);
 						}
 
