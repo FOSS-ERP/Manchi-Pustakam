@@ -1,4 +1,5 @@
 (function () {
+	const MIN_BILL_FOR_DISCOUNT = 100;
 	const page = frappe.pages["point-of-sale"];
 	if (!page || page.__machi_pos_extended) return;
 	page.__machi_pos_extended = true;
@@ -11,41 +12,65 @@
 		frappe.require("point-of-sale.bundle.js", () => {
 			const POS = erpnext.PointOfSale;
 
-			// Change the payable rounded total, before payment amounts are calculated.
-			const totals = erpnext.taxes_and_totals.prototype;
-			if (!totals.__machi_truncate_pos_total) {
-				const standard_set_rounded_total = totals.set_rounded_total;
-				totals.set_rounded_total = function (...args) {
-					if (this.frm.doc.doctype !== "POS Invoice") {
-						return standard_set_rounded_total.apply(this, args);
+			// Discard decimals from manually entered rates: 1.075 becomes 1.
+			if (!POS.ItemDetails.__machi_integer_rate_extended) {
+				const ItemDetails = POS.ItemDetails;
+
+				POS.ItemDetails = class extends ItemDetails {
+					static __machi_integer_rate_extended = true;
+
+					constructor(options) {
+						const events = options.events;
+						super({
+							...options,
+							events: {
+								...events,
+								form_updated(item, fieldname, value) {
+									if (fieldname === "rate") {
+										value = Math.trunc(flt(value));
+									}
+									return events.form_updated.call(events, item, fieldname, value);
+								},
+							},
+						});
 					}
-					const doc = this.frm.doc;
-					doc.disable_rounded_total = 0;
-					doc.rounded_total = Math.trunc(flt(doc.grand_total));
-					doc.rounding_adjustment = flt(
-						doc.rounded_total - flt(doc.grand_total),
-						precision("rounding_adjustment", doc)
-					);
-					this.set_in_company_currency(doc, ["rounding_adjustment", "rounded_total"]);
 				};
-				totals.__machi_truncate_pos_total = true;
 			}
 
-			// Show Total Cost and Discount, and truncate displayed Grand Total.
+			// Hide Net Total and show Total Cost before the bill discount.
 			if (!POS.ItemCart.__machi_discount_extended) {
 				const ItemCart = POS.ItemCart;
 
 				POS.ItemCart = class extends ItemCart {
 					static __machi_discount_extended = true;
 
-
 					make_cart_totals_section() {
 						super.make_cart_totals_section();
+
+						this.discount_edits = new WeakMap();
+						this.$sale_mode = $(`
+							<label>
+								${__("POS Sale Mode")}
+								<select class="form-control input-xs">
+									<option value="Store">${__("Store (10%)")}</option>
+									<option value="Exhibition">${__("Exhibition (0%)")}</option>
+								</select>
+							</label>
+						`).insertBefore(this.$add_discount_elem);
+						this.$sale_mode.find("select")
+							.val(localStorage.getItem("pos_sale_mode") === "Exhibition" ? "Exhibition" : "Store")
+							.on("change", (event) => {
+								const frm = this.events.get_frm();
+								localStorage.setItem("pos_sale_mode", event.target.value);
+								this.discount_edits.set(frm.doc, { field: "mode" });
+								this.update_totals_section(frm);
+								this.hide_discount_control(this.get_discount_percentage(frm.doc));
+							});
 
 						this.$total_cost = $(`
 							<div class="machi-total-cost-row"
 								style="display:flex;justify-content:space-between;
-									align-items:center;margin-bottom:var(--margin-sm)">
+								align-items:center;margin-bottom:var(--margin-sm)">
 								<span>${__("Total Cost")}</span>
 								<span class="machi-total-cost-amount"></span>
 							</div>
@@ -54,7 +79,7 @@
 						this.$discount_amount = $(`
 							<div class="machi-discount-row"
 								style="display:flex;justify-content:space-between;
-									align-items:center;margin-bottom:var(--margin-sm)">
+								align-items:center;margin-bottom:var(--margin-sm)">
 								<span>${__("Discount")}</span>
 								<span class="machi-discount-amount"></span>
 							</div>
@@ -78,13 +103,14 @@
 
 					update_totals_section(frm) {
 						frm = frm || this.events.get_frm();
+						this.update_bill_discount(frm);
 						super.update_totals_section(frm);
 
 						this.arrange_custom_totals();
 
 						const doc = frm.doc;
 
-						// Preserve decimal item rates in Total Cost.
+						// Total cost of all boxes before the bill discount.
 						const total_cost = (doc.items || []).reduce(
 							(total, item) =>
 								total + flt(item.qty) * flt(item.rate),
@@ -95,7 +121,10 @@
 							this.$total_cost
 								.find(".machi-total-cost-amount")
 								.text(
-									format_currency(total_cost, doc.currency)
+									format_currency(
+										total_cost,
+										doc.currency
+									)
 								);
 						}
 
@@ -109,6 +138,106 @@
 									)
 								);
 						}
+					}
+
+					get_discount_base(doc) {
+						const field = doc.apply_discount_on === "Grand Total" ? "grand_total" : "net_total";
+						return flt(doc[field]) + flt(doc.discount_amount);
+					}
+
+					get_discount_percentage(doc) {
+						const base = this.get_discount_base(doc);
+						return flt(doc.additional_discount_percentage) ||
+							(base > 0 ? 100 * flt(doc.discount_amount) / base : 0);
+					}
+
+					update_bill_discount(frm) {
+						const doc = frm.doc;
+						if (doc.doctype !== "POS Invoice" || doc.docstatus || doc.is_return ||
+							!frm.cscript?.calculate_taxes_and_totals || this.updating_bill_discount) return;
+
+						const allowed = flt(doc.total) > MIN_BILL_FOR_DISCOUNT;
+						const edit = this.discount_edits.get(doc);
+						if (!edit && !frm.is_new()) return;
+						const default_percent = this.$sale_mode.find("select").val() === "Store" ? 10 : 0;
+						const amount = allowed && edit?.field === "amount"
+							? Math.min(edit.value, Math.max(0, this.get_discount_base(doc)))
+							: 0;
+						const percent = allowed && edit?.field !== "amount"
+							? edit?.value ?? default_percent
+							: 0;
+
+						if (flt(doc.additional_discount_percentage) === percent &&
+							(percent || flt(doc.discount_amount) === amount)) return;
+
+						this.updating_bill_discount = true;
+						try {
+							doc.apply_discount_on ||= "Net Total";
+							doc.additional_discount_percentage = percent;
+							doc.discount_amount = amount;
+							frm.dirty();
+							frm.cscript.calculate_taxes_and_totals();
+						} finally {
+							this.updating_bill_discount = false;
+						}
+					}
+
+					show_discount_control() {
+						const frm = this.events.get_frm();
+						const doc = frm.doc;
+						if (doc.doctype !== "POS Invoice" || doc.docstatus || doc.is_return) {
+							return super.show_discount_control();
+						}
+
+						const $editor = $(`
+							<div class="d-flex" style="gap:8px">
+								<label>${__("Discount %")}
+									<input type="number" min="0" max="100" step="any" class="form-control input-xs">
+								</label>
+								<label>${__("Discount (₹)")}
+									<input type="number" min="0" step="0.01" class="form-control input-xs">
+								</label>
+							</div>
+						`);
+						const [$percent, $amount] = $editor.find("input").toArray().map((input) => $(input));
+						const refresh = () => {
+							$percent.val(flt(this.get_discount_percentage(doc), 6));
+							$amount.val(flt(doc.discount_amount));
+						};
+						const apply = (field, input) => {
+							if (this.events.get_frm().doc !== doc) return;
+							if (flt(doc.total) <= MIN_BILL_FOR_DISCOUNT) {
+								frappe.msgprint(__("Discount is available only on bills above ₹{0}.", [MIN_BILL_FOR_DISCOUNT]));
+								refresh();
+								return;
+							}
+							const value = flt(input.value);
+							const max = field === "percent" ? 100 : this.get_discount_base(doc);
+							if (value < 0 || value > max) {
+								frappe.msgprint(__("Enter a discount between 0 and {0}.", [max]));
+								refresh();
+								return;
+							}
+							this.discount_edits.set(doc, {
+								field,
+								value: field === "amount" ? flt(value, precision("discount_amount", doc)) : value,
+							});
+							this.update_totals_section(frm);
+							refresh();
+						};
+						$percent.on("change", (event) => apply("percent", event.target));
+						$amount.on("change", (event) => apply("amount", event.target));
+						$editor.on("click", (event) => event.stopPropagation());
+						$editor.on("keydown", "input", (event) => {
+							if (event.key === "Enter") {
+								event.preventDefault();
+								event.stopPropagation();
+								event.target.blur();
+							}
+						});
+						this.$add_discount_elem.empty().append($editor);
+						refresh();
+						$percent.trigger("focus");
 					}
 				};
 			}

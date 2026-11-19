@@ -8,7 +8,7 @@ app_license = "mit"
 # required_apps = ["erpnext"]
 
 page_js = {
-    "point-of-sale": "public/js/pos_discount.js"
+    "point-of-sale": "public/js/pos.js"
 }
 # Apps
 # ------------------
@@ -281,7 +281,7 @@ page_js = {
 # Permit zero stock valuation only on POS invoice transaction rows.
 doc_events = {
     "POS Invoice": {
-        "before_validate": "machi_coutomizations.pos_discount.prepare_pos_items",
+        "before_validate": "machi_coutomizations.pos.prepare_pos_items",
     }
 }
 
