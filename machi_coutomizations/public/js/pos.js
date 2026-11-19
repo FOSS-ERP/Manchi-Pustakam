@@ -313,24 +313,59 @@
 							}
 						);
 
-						$camera.on("click", () => {
-							new frappe.ui.Scanner({
-								dialog: true,
-								multiple: false,
-								on_scan: (data) => {
-									const barcode =
-										typeof data === "string"
-											? data
-											: data.decodedText;
-
-									if (barcode) {
-										this.machi_scan_barcode(barcode);
-									}
-								},
-							});
-						});
+						$camera.on("click", () => this.machi_open_camera_scanner());
 
 						this.machi_scan_queue = Promise.resolve();
+					}
+
+					machi_open_camera_scanner() {
+						if (this.machi_camera_scanner?.dialog.is_visible) return;
+
+						const Scanner = frappe.ui.Scanner;
+						const has_native_toggle = typeof Scanner.prototype.render_keep_open_toggle === "function";
+						const storage_key = "scanner_keep_open";
+						let last_scan;
+						const options = {
+							dialog: true,
+							allow_keep_open: true,
+							multiple: !has_native_toggle && localStorage.getItem(storage_key) === "1",
+							on_scan: (data) => {
+								const barcode = (typeof data === "string" ? data : data?.decodedText)?.trim();
+								if (!barcode) return;
+
+								if (!has_native_toggle && options.multiple) {
+									const now = Date.now();
+									const repeated = last_scan?.barcode === barcode && now - last_scan.at < 2000;
+									last_scan = { barcode, at: now };
+									if (repeated) return;
+								}
+
+								this.machi_scan_barcode(barcode);
+							},
+						};
+
+						const scanner = new Scanner(options);
+						this.machi_camera_scanner = scanner;
+						scanner.dialog.$wrapper.one("hidden.bs.modal", () => {
+							if (this.machi_camera_scanner !== scanner) return;
+							this.machi_camera_scanner = null;
+							if (this.$component.is(":visible")) this.barcode_field.set_focus();
+						});
+
+						if (!has_native_toggle) {
+							const $preview = scanner.dialog.get_field("scan_area").$wrapper;
+							$preview.css({ borderRadius: "var(--border-radius-lg, 8px)", overflow: "hidden" });
+							const $toggle = $(`
+								<label class="d-flex align-items-center mt-3" style="gap: 8px">
+									<input type="checkbox">
+									<span>${__("Keep scanner open after scan")}</span>
+								</label>
+							`).insertAfter($preview);
+							$toggle.find("input").prop("checked", options.multiple).on("change", (event) => {
+								options.multiple = event.target.checked;
+								localStorage.setItem(storage_key, options.multiple ? "1" : "0");
+							});
+						}
 					}
 
 					machi_scan_barcode(value) {
@@ -423,7 +458,7 @@
 								);
 							})
 							.finally(() => {
-								if (this.$component.is(":visible")) {
+								if (!this.machi_camera_scanner?.dialog.is_visible && this.$component.is(":visible")) {
 									this.barcode_field.set_focus();
 								}
 							});
